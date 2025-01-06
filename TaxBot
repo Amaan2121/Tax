@@ -1,0 +1,110 @@
+import logging
+import psycopg2
+
+# Configure logging for debug and error tracking
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def connect_db():
+    """
+    Establish a connection to the local PostgreSQL database.
+    Returns:
+        psycopg2.extensions.connection or None: 
+            Connection object if successful, or None if an error occurs.
+    """
+    try:
+        conn = psycopg2.connect(
+            host='localhost',
+            database='tax_bot_db',
+            user='*****',
+            password='******',
+            port='5432'
+        )
+        return conn
+    except psycopg2.Error as error:
+        logging.error(f"Failed to connect to PostgreSQL: {error}")
+        return None
+
+def upsert_data(table_name, data):
+    """
+    Performs an upsert (insert or update) on the specified table.
+    Args:
+        table_name (str): Name of the target table.
+        data (dict): Dictionary of column-value mappings to be inserted or updated.
+    Returns:
+        bool: True if the operation is successful, False otherwise.
+    """
+    conn = connect_db()
+    if not conn:
+        return False
+    
+    try:
+        columns = list(data.keys())
+        values = list(data.values())
+        col_placeholders = ', '.join(['%s'] * len(columns))
+        col_names = ', '.join(columns)
+        
+        # Build the ON CONFLICT part, assuming 'user_id' is the unique key
+        conflict_update_str = ', '.join(
+            f"{col} = EXCLUDED.{col}"
+            for col in columns
+            if col != 'user_id'
+        )
+
+        query = f"""
+        INSERT INTO {table_name} ({col_names})
+        VALUES ({col_placeholders})
+        ON CONFLICT (user_id) 
+        DO UPDATE SET {conflict_update_str}
+        """
+
+        with conn.cursor() as cur:
+            logging.info(f"Executing upsert on {table_name}: {data}")
+            cur.execute(query, values)
+            conn.commit()
+        return True
+    
+    except psycopg2.Error as error:
+        logging.error(f"Upsert operation failed for {table_name}: {error}")
+        return False
+    finally:
+        conn.close()
+
+def validate_numeric_input(value, field_name="amount"):
+    """
+    Ensures the provided value is a valid, non-negative float.
+    Args:
+        value (str): The raw input string to validate.
+        field_name (str): Name of the field, used in error messages.
+    Returns:
+        tuple:
+            (float or None, str or None): 
+            A tuple containing the parsed float value (or None on error) 
+            and an optional error message (or None if valid).
+    """
+    try:
+        if not value or value.strip() == '':
+            return None, f"Please provide a valid {field_name}."
+        
+        # Remove currency symbols or commas before parsing
+        cleaned = (value
+                   .replace("Rs", "")
+                   .replace("PKR", "")
+                   .replace(",", "")
+                   .strip())
+        
+        if not cleaned.replace(".", "").isdigit():
+            return None, (f"Invalid {field_name}. "
+                          "Please enter a numeric value without symbols or text.")
+        
+        amount = float(cleaned)
+        if amount < 0:
+            return None, f"The {field_name} cannot be negative."
+        
+        return amount, None
+    
+    except ValueError:
+        return None, f"Unable to parse the {field_name}. Please enter a valid number."
